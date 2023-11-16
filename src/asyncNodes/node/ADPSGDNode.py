@@ -257,7 +257,7 @@ class ADPSGDNode(Node):
 
                     logging.info("Saving model.")
                     if not os.path.exists(os.path.join(self.log_dir, "models")):
-                        os.makedirs(os.path.join(self.log_dir, "models"))
+                        os.makedirs(os.path.join(self.log_dir, "models"),exist_ok=True)
 
                     torch.save(self.model.state_dict(), os.path.join(self.log_dir, "models/{}_model_{}_iter.pt".format(self.uid, iteration+1)))
 

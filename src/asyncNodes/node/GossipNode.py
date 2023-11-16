@@ -96,18 +96,27 @@ class GossipNode(Node):
             
             with self.model_lock:
 
-                self.age_t = self.sharing._averaging_gossip(data, self.age_t)  
+                start = time.perf_counter()
+                self.age_t = self.sharing._averaging_gossip(data, self.age_t)
+                stop = time.perf_counter()
+                self.cpu_time_aggr += stop - start
+
                 self.msg_aggr += 1
                 
+                start = time.perf_counter()
                 self.trainer.train(self.dataset)
+                stop = time.perf_counter()
+                self.cpu_time_train += stop - start
 
                 #update model age
                 if(not self.trainer.full_epochs):
                     self.age_t += self.trainer.rounds * self.trainer.batch_size
+                    self.gradient_steps += self.trainer.rounds
                 else:
                     #correct only for CIFAR10
                     self.age_t += self.trainer.rounds * (self.dataset.sizes[self.dataset.dataset_id]*50000)
-            
+                    self.gradient_steps += self.trainer.rounds * (self.dataset.sizes[self.dataset.dataset_id]*50000) / self.trainer.batch_size
+
 
             if self.reset_optimizer: 
                 self.optimizer = self.optimizer_class(
@@ -123,9 +132,15 @@ class GossipNode(Node):
                     "total_bytes": {},
                     "total_meta": {},
                     "total_data_per_n": {},
+                    "cpu_time_train": {},
+                    "cpu_time_aggr": {},
+                    "gradient_steps": {},
                 }
 
             results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes
+            results_dict["cpu_time_train"][iteration + 1] = self.cpu_time_train
+            results_dict["cpu_time_aggr"][iteration + 1] = self.cpu_time_aggr
+            results_dict["gradient_steps"][iteration + 1] = self.gradient_steps
 
             if hasattr(self.communication, "total_meta"):
                 results_dict["total_meta"][
@@ -152,8 +167,11 @@ class GossipNode(Node):
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after
-                self.msg_stats["msg_sent"][iteration + 1] = self.msg_sent
-                self.msg_stats["msg_aggr"][iteration + 1] = self.msg_aggr
+                self.stats["msg_sent"][iteration + 1] = self.msg_sent
+                self.stats["msg_aggr"][iteration + 1] = self.msg_aggr
+                self.stats["cpu_time_train"][iteration + 1] = self.cpu_time_train
+                self.stats["cpu_time_aggr"][iteration + 1] = self.cpu_time_aggr
+                self.stats["gradient_steps"][iteration + 1] = self.gradient_steps
 
 
                 if self.eval_on_test_set:
@@ -167,7 +185,7 @@ class GossipNode(Node):
 
                     logging.info("Saving model to test later.")
                     if not os.path.exists(os.path.join(self.log_dir, "models")):
-                        os.makedirs(os.path.join(self.log_dir, "models"))
+                        os.makedirs(os.path.join(self.log_dir, "models"), exist_ok=True)
 
                     torch.save(self.model.state_dict(), os.path.join(self.log_dir, "models/{}_model_{}_iter.pt".format(self.uid, iteration+1)))
 
@@ -191,9 +209,9 @@ class GossipNode(Node):
             json.dump(results_dict, of)
 
         with open(
-            os.path.join(self.log_dir, "{}_msg_stats.json".format(self.uid)), "w+"
+            os.path.join(self.log_dir, "{}_stats.json".format(self.uid)), "w+"
         ) as of:
-            json.dump(self.msg_stats, of)
+            json.dump(self.stats, of)
 
         logging.debug("gossip-thread: Out of loop")
 
@@ -421,13 +439,19 @@ class GossipNode(Node):
 
         self.age_t = 0
 
+        self.iteration = 0
+
         self.send_history = dict()
 
         self.msg_sent = 0
         self.msg_aggr = 0
-        self.msg_stats = {"msg_sent": {}, "msg_aggr": {}}
 
-        self.iteration = 0
+        self.cpu_time_train = 0
+        self.cpu_time_aggr = 0
+        self.gradient_steps = 0
+
+        self.stats = {"msg_sent": {}, "msg_aggr": {}, "cpu_time_train": {}, "cpu_time_aggr": {}, "gradient_steps": {}}
+
 
 
 
@@ -518,3 +542,4 @@ class GossipNode(Node):
             "Each proc uses %d threads out of %d.", self.threads_per_proc, total_threads
         )
         self.run()
+

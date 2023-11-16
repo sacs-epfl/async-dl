@@ -6,14 +6,14 @@ run_path=../../eval/data # Path to the folder where the graph and config file wi
 config_file=config.ini
 cp $graph $config_file $run_path
 
-env_python=../../newenv/bin/python3    #~/miniconda3/envs/decpy/bin/python3 # Path to python executable of the environment | conda recommended
+env_python=../../new_env/bin/python3    #~/miniconda3/envs/decpy/bin/python3 # Path to python executable of the environment | conda recommended
 machines=1
 iterations=70
 test_after=30
 eval_file=testing_adpsgd.py # decentralized driver code (run on each machine)
 log_level=DEBUG # DEBUG | INFO | WARN | CRITICAL
 
-m=0 # machine id corresponding consistent with ip.json
+m=`cat $(grep addresses_filepath $config_file | awk '{print $3}') | grep $(/sbin/ifconfig ens785 | grep 'inet ' | awk '{print $2}') | cut -d'"' -f2` # machine id corresponding consistent with ip.json
 echo M is $m
 
 procs_per_machine=4

@@ -36,7 +36,7 @@ class CIFAR10():
     ):
        
         self.test_batch_size = 1024
-        self.test_dir = "../eval/data"
+        self.test_dir = "/mnt/nfs/shared/CIFAR"
         self.num_classes = NUM_CLASSES
         self.transform = transforms.Compose(
             [

@@ -70,10 +70,17 @@ def eval(base_dir):
 
     os.makedirs(os.path.join(".", "evaluation_of_{}".format(exp_datetime)))
     for node in test_eval:
+        
+        sorted1 = {k:test_eval[node]["test_acc"][k] for k in sorted(test_eval[node]["test_acc"].keys(), key = int)}
+        sorted2 = {k:test_eval[node]["test_loss"][k] for k in sorted(test_eval[node]["test_loss"].keys(), key = int)}
+        sorted3 = {k:test_eval[node]["time_test_acc"][k] for k in sorted(test_eval[node]["time_test_acc"].keys())}
+   
+        node_sorted = {"test_acc": sorted1, "test_loss": sorted2, "time_test_acc": sorted3}
+
         with open(
             os.path.join("./evaluation_of_{}/".format(exp_datetime), "{}_testset_results.json".format(node)), "w"
         ) as of:
-            json.dump(test_eval[node], of)
+            json.dump(node_sorted, of)
 
 
 

@@ -117,27 +117,44 @@ class SuperGossipNode(Node):
             if time.time() >= t_end:    #stop the training after training_time minutes
                 break
 
-            logging.info("Starting training iteration: %d", iteration)
-            rounds_to_train_evaluate -= 1
-            rounds_to_test -= 1
-            self.iteration = iteration
+
+            train_flag = 0
+
+            if(not self.msg_queue.empty()):
+
+                logging.info("Starting training iteration: %d", iteration)
+                rounds_to_train_evaluate -= 1
+                rounds_to_test -= 1
+                self.iteration = iteration
 
 
-            #train
-            self.trainer.train(self.dataset)
+                #train
+                start = time.perf_counter()
+                self.trainer.train(self.dataset)
+                stop = time.perf_counter()
+                self.cpu_time_train += stop - start
             
-            #update age
-            if(not self.trainer.full_epochs):
-                self.age_t += self.trainer.rounds * self.trainer.batch_size
+                #update age
+                if(not self.trainer.full_epochs):
+                    self.age_t += self.trainer.rounds * self.trainer.batch_size
+                    self.gradient_steps += self.trainer.rounds
+                else:
+                    #correct only for CIFAR10
+                    self.age_t += self.trainer.rounds * (self.dataset.sizes[self.dataset.dataset_id]*50000)
+                    self.gradient_steps += self.trainer.rounds * (self.dataset.sizes[self.dataset.dataset_id]*50000) / self.trainer.batch_size
+
+                #aggregate
+                start = time.perf_counter()
+                new_age, no_of_aggr_msgs = self.sharing._averaging_gossip_queue(self.msg_queue, self.age_t)
+                stop = time.perf_counter()
+                self.cpu_time_aggr += stop - start
+                self.age_t = new_age
+                self.msg_aggr += no_of_aggr_msgs
+            
+                train_flag=1
             else:
-                #correct only for CIFAR10
-                self.age_t += self.trainer.rounds * (self.dataset.sizes[self.dataset.dataset_id]*50000)
-
-            #aggregate
-            new_age, no_of_aggr_msgs = self.sharing._averaging_gossip_queue(self.msg_queue, self.age_t)
-            self.age_t = new_age
-            self.msg_aggr += no_of_aggr_msgs
-
+                logging.debug("empty queue - no aggregation")
+                time.sleep(1.0)
 
             new_neighbors = self.get_neighbors()
             self.my_neighbors = new_neighbors
@@ -158,87 +175,98 @@ class SuperGossipNode(Node):
             #store meta info
             self.sending_log.append({"timestamp": datetime.fromtimestamp(datetime.now().timestamp()), "iteration": iteration+1, "from": self.uid, "to": peer_to_send, "age": self.age_t})
         
-            if self.reset_optimizer: 
-                self.optimizer = self.optimizer_class(
-                    self.model.parameters(), **self.optimizer_params
-                ) 
-                self.trainer.reset_optimizer(self.optimizer)
 
-            if iteration:
-                with open(
-                    os.path.join(self.log_dir, "{}_results.json".format(self.rank)),
-                    "r",
-                ) as inf:
-                    results_dict = json.load(inf)
-            else:
-                results_dict = {
-                    "train_loss": {},
-                    "test_loss": {},
-                    "test_acc": {},
-                    "total_bytes": {},
-                    "total_meta": {},
-                    "total_data_per_n": {},
-                    "aggregated_msgs": {}
-                }
+            if(train_flag==1):
+                if self.reset_optimizer: 
+                    self.optimizer = self.optimizer_class(
+                        self.model.parameters(), **self.optimizer_params
+                    ) 
+                    self.trainer.reset_optimizer(self.optimizer)
 
-            results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes            
-            results_dict["aggregated_msgs"][iteration + 1] = no_of_aggr_msgs
+                if iteration:
+                    with open(
+                        os.path.join(self.log_dir, "{}_results.json".format(self.rank)),
+                        "r",
+                    ) as inf:
+                        results_dict = json.load(inf)
+                else:
+                    results_dict = {
+                        "train_loss": {},
+                        "test_loss": {},
+                        "test_acc": {},
+                        "total_bytes": {},
+                        "total_meta": {},
+                        "total_data_per_n": {},
+                        "aggregated_msgs": {},
+                        "cpu_time_train": {},
+                        "cpu_time_aggr": {},
+                        "gradient_steps": {},
 
+                    }
 
-            if hasattr(self.communication, "total_meta"):
-                results_dict["total_meta"][
-                    iteration + 1
-                ] = self.communication.total_meta
-            if hasattr(self.communication, "total_data"):
-                results_dict["total_data_per_n"][
-                    iteration + 1
-                ] = self.communication.total_data
+                results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes            
+                results_dict["aggregated_msgs"][iteration + 1] = no_of_aggr_msgs
+                results_dict["cpu_time_train"][iteration + 1] = self.cpu_time_train
+                results_dict["cpu_time_aggr"][iteration + 1] = self.cpu_time_aggr
+                results_dict["gradient_steps"][iteration + 1] = self.gradient_steps
 
-
-            if rounds_to_train_evaluate == 0 and self.eval_on_train_set:
-
-                logging.info("Evaluating on train set.")
-                rounds_to_train_evaluate = self.train_evaluate_after
-                loss_after_sharing = self.trainer.eval_loss(self.dataset)
-                results_dict["train_loss"][iteration + 1] = loss_after_sharing
-
-                self.save_plot(
-                    results_dict["train_loss"],
-                    "train_loss",
-                    "Training Loss",
-                    "Communication Rounds",
-                    os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
-                )
+                if hasattr(self.communication, "total_meta"):
+                    results_dict["total_meta"][
+                        iteration + 1
+                    ] = self.communication.total_meta
+                if hasattr(self.communication, "total_data"):
+                    results_dict["total_data_per_n"][
+                        iteration + 1
+                    ] = self.communication.total_data
 
 
-            if self.dataset.__testing__ and rounds_to_test == 0:
-                rounds_to_test = self.test_after
-                self.msg_stats["msg_sent"][iteration + 1] = self.msg_sent
-                self.msg_stats["msg_aggr"][iteration + 1] = self.msg_aggr
-                
-                if self.eval_on_test_set:
+                if rounds_to_train_evaluate == 0 and self.eval_on_train_set:
+
+                    logging.info("Evaluating on train set.")
+                    rounds_to_train_evaluate = self.train_evaluate_after
+                    loss_after_sharing = self.trainer.eval_loss(self.dataset)
+                    results_dict["train_loss"][iteration + 1] = loss_after_sharing
+
+                    self.save_plot(
+                        results_dict["train_loss"],
+                        "train_loss",
+                        "Training Loss",
+                        "Communication Rounds",
+                        os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
+                    )
+
+
+                if self.dataset.__testing__ and rounds_to_test == 0:
+                    rounds_to_test = self.test_after
+                    self.stats["msg_sent"][iteration + 1] = self.msg_sent
+                    self.stats["msg_aggr"][iteration + 1] = self.msg_aggr
+                    self.stats["cpu_time_train"][iteration + 1] = self.cpu_time_train
+                    self.stats["cpu_time_aggr"][iteration + 1] = self.cpu_time_aggr
+                    self.stats["gradient_steps"][iteration + 1] = self.gradient_steps
+
+                    if self.eval_on_test_set:
                    
-                    logging.info("Evaluating on test set.")
-                    ta, tl = self.dataset.test(self.model, self.loss)  
-                    results_dict["test_acc"][iteration + 1] = ta
-                    results_dict["test_loss"][iteration + 1] = tl
+                        logging.info("Evaluating on test set.")
+                        ta, tl = self.dataset.test(self.model, self.loss)  
+                        results_dict["test_acc"][iteration + 1] = ta
+                        results_dict["test_loss"][iteration + 1] = tl
  
     
-                else:
-                    
-                    logging.info("Saving model to test later.")
-                    if not os.path.exists(os.path.join(self.log_dir, "models")):
-                        os.makedirs(os.path.join(self.log_dir, "models"))
+                    else:
+                        
+                        logging.info("Saving model to test later.")
+                        if not os.path.exists(os.path.join(self.log_dir, "models")):
+                            os.makedirs(os.path.join(self.log_dir, "models"), exist_ok=True)
 
-                    torch.save(self.model.state_dict(), os.path.join(self.log_dir, "models/{}_model_{}_iter.pt".format(self.uid, iteration+1)))
+                        torch.save(self.model.state_dict(), os.path.join(self.log_dir, "models/{}_model_{}_iter.pt".format(self.uid, iteration+1)))
                 
 
-            with open(
-                os.path.join(self.log_dir, "{}_results.json".format(self.rank)), "w"
-            ) as of:
-                json.dump(results_dict, of)
+                with open(
+                    os.path.join(self.log_dir, "{}_results.json".format(self.rank)), "w"
+                ) as of:
+                    json.dump(results_dict, of)
 
-            iteration += 1
+                iteration += 1
 
             
         logging.info("Time passed - waiting for receiver thread to join")
@@ -264,9 +292,9 @@ class SuperGossipNode(Node):
 
 
         with open(
-                os.path.join(self.log_dir, "{}_msg_stats.json".format(self.uid)), "w+"
+                os.path.join(self.log_dir, "{}_stats.json".format(self.uid)), "w+"
             ) as of:
-                json.dump(self.msg_stats, of)
+                json.dump(self.stats, of)
 
 
         logging.info("Training complete. Disconnecting neighbors.")
@@ -432,16 +460,22 @@ class SuperGossipNode(Node):
         self.training_time = asyncConfigs["training_time"]
         self.eval_on_train_set = asyncConfigs["eval_on_train_set"]
         self.eval_on_test_set = asyncConfigs["eval_on_test_set"]
+        
+        self.age_t = 0
 
+        self.iteration = 0
 
         self.sending_log = []
-        self.age_t = 0
+
         self.msg_sent = 0
         self.msg_aggr = 0
 
-        self.msg_stats = {"msg_sent": {}, "msg_aggr": {}}
+        self.cpu_time_train = 0
+        self.cpu_time_aggr = 0
+        self.gradient_steps = 0
 
-        self.iteration = 0
+        self.stats = {"msg_sent": {}, "msg_aggr": {}, "cpu_time_train": {}, "cpu_time_aggr": {}, "gradient_steps": {}}
+
 
 
     def __init__(
@@ -531,3 +565,4 @@ class SuperGossipNode(Node):
             "Each proc uses %d threads out of %d.", self.threads_per_proc, total_threads
         )
         self.run()
+
